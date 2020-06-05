@@ -36,7 +36,3 @@ if __name__ == '__main__':
   print(hash_table.search_hash(15))
   print(hash_table.search_hash(33))
 
-————————————————
-原文作者：娃哈哈店长
-转自链接：https://learnku.com/articles/39206
-版权声明：著作权归作者所有。商业转载请联系作者获得授权，非商业转载请保留以上作者信息和原文链接。
