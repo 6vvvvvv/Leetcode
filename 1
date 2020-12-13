@@ -1,0 +1,436 @@
+import PropTypes from "prop-types";
+import { Mutation, withApollo, Query } from "react-apollo";
+import Alert from "react-s-alert";
+import { connect } from "react-redux";
+
+import { C } from "constants";
+import { debounce, ucFirst } from "utils";
+import { types, isProduction } from "configs/mainConfig";
+import AuthSwitch from "Auth/AuthSwitch";
+import RoleSwitch from "Auth/RoleSwitch";
+import { withUserName } from "Decorator/AuthContext";
+import UPDATE_INTENT_TRANSLATION from "graphQL/updateIntentTranslation";
+import UPDATE_INTENT_TRANSLATION_WITH_ARRAY from "graphQL/updateIntentTranslationWithArray";
+import GET_TAGS from "graphQL/getTags";
+import TagFilter from "Elements/Utils/TagFilter";
+import CheckboxList from "Elements/Tools/CheckboxList";
+import MultiSelect from "Elements/Tools/MultiSelect";
+import GET_ALL_PROJECTS from "graphQL/getAllProjects";
+import ReactLoading from "Elements/Tools/ReactLoading";
+import Accordion from "Elements/Tools/Accordion";
+import TextInput from "../Editor/Inputs/TextInput";
+
+// TODO: Export components in other files
+
+class IntentInfosEditor extends React.PureComponent {
+	constructor(props) {
+		super(props);
+		this.handleUpdateIntent = debounce(this.handleUpdateIntent, 250);
+	}
+
+	state = {
+		isLoading: false,
+		newExampleInput: "",
+		newTranslationInput: "",
+		description: this.props.data.description,
+		examples: this.props.data.examples || [],
+		tags: this.props.data.tags || [],
+		type: this.props.data.type ? [ this.props.data.type ] : [ C.INTENTS ],
+		postbackValue: this.props.data.postbackValue || "",
+		associatedProjects: this.props.data.associatedProjects || [],
+		watchwords: this.props.data.watchwords || []
+	}
+
+	// Handle enter key press to save new example to dynamodb
+	handleKeyPress = (event, updateIntent, variables) => {
+		if (event.key === "Enter") {
+			this.handleUpdateInputs(updateIntent, variables);
+			if (variables.examples || variables.attribute === C.EXAMPLES) this.setState({ newExampleInput: "" });
+		}
+	}
+
+	// Update state from inputs and save values to dynamodb
+	// State is used for UI updates
+	handleUpdateInputs = (updateIntent, variables) => {
+		const { description, attribute, value } = variables;
+		const newState = { ...variables };
+
+		// Get a new state from variables, and update it if there is a translation update
+		if (attribute) newState[attribute] = value;
+
+		this.setState({ ...newState },
+			() => {
+				if (description === "" || (attribute === C.DESCRIPTION && value === "")) {
+					return Alert.warning(__("NoDescription"));
+				}
+				return this.handleUpdateIntent(updateIntent, variables);
+			});
+	}
+
+	// Save to dynamodb, with previous values and updated values
+	handleUpdateIntent = (mutation, variables) => {
+		mutation({
+			variables
+		})
+		.catch((e) => {
+			if (!isProduction) console.log("Error in update infos:", e);
+			return Alert.error(__("InfosUpdateError"));
+		});
+	};
+
+	// Handle toggle checkboxes
+	handleCheckBoxChange = (name, mutation) => {
+		const { type } = this.state;
+		let newType = [];
+		if (type.includes(name)) {
+			newType = type.filter(category => category !== name);
+		} else {
+			newType = [ name ];
+		}
+		this.setState(
+			{ type: newType },
+			() => this.handleUpdateIntent(mutation, {
+				intentName: this.props.data.intentName,
+				attribute: C.TYPE,
+				value: newType[0] || ""
+			})
+		);
+	}
+
+	// Update example in array
+	updateArray = (array, index, value) => [
+		...array.slice(0, index),
+		value,
+		...array.slice(index + 1)
+	].filter(element => element !== "");
+
+	render() {
+		const {
+			lang,
+			data: {
+				intentName,
+				description,
+				examples,
+				categoryName,
+				tags: propsTags
+			},
+			userName
+		} = this.props;
+
+		const {
+			newExampleInput,
+			description: descriptionFromState,
+			examples: examplesFromState,
+			tags,
+			type,
+			postbackValue,
+			watchwords
+		} = this.state;
+
+		const DescriptionComponent = <Mutation mutation={UPDATE_INTENT_TRANSLATION}>
+			{updateIntent => <TextInput
+				value={descriptionFromState}
+				placeholder={__("DescriptionPlaceholder")}
+				onChange={value => this.handleUpdateInputs(updateIntent, {
+					intentName,
+					attribute: C.DESCRIPTION,
+					value,
+					lang
+				})}
+				className="title"
+			/>
+			}
+		</Mutation>;
+
+		const ExamplesComponent = (example, index) => <Mutation
+			mutation={UPDATE_INTENT_TRANSLATION_WITH_ARRAY}>
+			{updateIntent => (
+				<TextInput
+					value={example}
+					placeholder={__("MessagePlaceholder")}
+					onChange={value => this.handleUpdateInputs(updateIntent, {
+						intentName,
+						attribute: C.EXAMPLES,
+						value: this.updateArray(examplesFromState, index, value),
+						lang
+					})}
+					className="title"
+				/>
+			)}
+		</Mutation>;
+
+		const NewExampleComponent = <Mutation
+			mutation={UPDATE_INTENT_TRANSLATION_WITH_ARRAY}>
+			{updateIntent => (
+				<TextInput
+					value={newExampleInput}
+					placeholder={__("NewExamplePlaceholder")}
+					onChange={value => value !== "" && value !== "\n" && this.setState({ newExampleInput: value })}
+					onKeyPress={event => this.handleKeyPress(event, updateIntent, {
+						intentName,
+						attribute: C.EXAMPLES,
+						value: this.updateArray(
+							examplesFromState,
+							examplesFromState.length,
+							newExampleInput
+						),
+						lang
+					})}
+					className="title"
+				/>
+			)}
+		</Mutation>;
+
+		const TypeComponent = () => <div className="infos-container">
+			<div className="top-line">
+				{__("Type")}
+			</div>
+			<Mutation
+				mutation={UPDATE_INTENT_TRANSLATION}>
+				{updateIntent => (
+					<div className="bottom-line">
+						<CheckboxList
+							radio
+							items={types}
+							container={type}
+							handleChange={name => this.handleCheckBoxChange(name, updateIntent)}
+							emptyExemple={__("NoTypes")}
+						/>
+						{
+							type.includes(C.POSTBACK)
+								&& <TextInput
+									value={postbackValue}
+									onChange={value => this.handleUpdateInputs(updateIntent, {
+										intentName,
+										attribute: C.POSTBACK_VALUE,
+										value
+									})}
+									className="title"
+								/>
+						}
+					</div>
+				)}
+			</Mutation>
+		</div>;
+
+		const AssociatedProjectsComponent = () => <div className="">
+			<div className="top-line">
+				{__("AssociatedProjects")}
+			</div>
+			<Query
+				query={GET_ALL_PROJECTS}
+				variables={{ userName }}
+			>
+				{({
+					loading,
+					error,
+					data
+				}) => {
+					if (loading && !data.getAllProjects) return <ReactLoading type="spin" className="main-loader dark-loader" />;
+					if (error) return <p>{`Error!: ${error}`}</p>;
+
+					const options = data.getAllProjects
+					.map(({ projectName }) => ({ value: projectName, label: projectName }));
+
+					return <Mutation
+						mutation={UPDATE_INTENT_TRANSLATION_WITH_ARRAY}>
+						{updateIntent => (
+							<MultiSelect
+								onChange={array => this.handleUpdateInputs(updateIntent, {
+									intentName,
+									attribute: C.ASSOCIATED_PROJECTS,
+									value: array.map(entry => entry.value)
+								})}
+								options={options}
+								menuPlacement="auto"
+								value={this.state.associatedProjects.map(project => ({ label: project, value: project }))}
+							/>
+						)}
+					</Mutation>;
+				}}
+			</Query>
+		</div>;
+
+		return <React.Fragment>
+			<AuthSwitch
+				adminComponent = {<Accordion
+					isOpened={false}
+					content={<React.Fragment>
+						<div className="intent-and-category">
+							<div className="">
+								<div className="top-line">
+									{__("Id")}
+								</div>
+								<div className="bottom-line">
+									{intentName}
+								</div>
+							</div>
+							<div className="infos-container">
+								<div className="top-line">
+									{__("CategoryName")}
+								</div>
+								<div className="bottom-line">
+									{categoryName}
+								</div>
+							</div>
+						</div>
+						<TypeComponent />
+						<AssociatedProjectsComponent />
+						<hr className=""/>
+					</React.Fragment>}
+					title={__("AdminSettings")}
+				/>}
+			/>
+
+			{/* Tags */}
+			<AuthSwitch
+				userComponent={
+					propsTags && Array.isArray(propsTags) && propsTags.length > 0 ? <div className="infos-container">
+						<div className="top-line">
+							{__("Tags")}
+						</div>
+						<TagFilter tags={propsTags} />
+					</div> : null
+				}
+				adminComponent={
+					<div className="infos-container">
+						<div className="top-line">
+							{__("Tags")}
+						</div>
+						<Query
+							query={GET_TAGS}
+						>
+							{({
+								loading,
+								error,
+								data
+							}) => {
+								if (loading && !data.getTags && !data.getTags.tags) return <ReactLoading type="spin" className="main-loader dark-loader" />;
+								if (error) return <p>{`Error!: ${error}`}</p>;
+								const allTags = data.getTags.tags.map(tag => ({ label: tag, value: tag }));
+
+								return <Mutation
+									mutation={UPDATE_INTENT_TRANSLATION_WITH_ARRAY}>
+									{ updateIntent => (
+										<MultiSelect
+											onChange={array => this.handleUpdateInputs(updateIntent, {
+												intentName,
+												attribute: C.TAGS,
+												value: array.map(entry => ucFirst(entry.value))
+											})}
+											options={allTags}
+											menuPlacement="auto"
+											value={tags.map(tag => ({ label: tag, value: tag }))}
+											allowsCreation={true}
+										/>
+									)}
+								</Mutation>;
+							}}
+						</Query>
+					</div>
+				}
+			/>
+
+			{/* watchwords */}
+			<AuthSwitch
+				userComponent={
+					<div className="infos-container">
+						<div className="top-line">
+							{__("Watchwords")}
+						</div>
+						<TagFilter tags={this.state.watchwords} />
+					</div>
+				}
+				adminComponent={
+					<div className="infos-container">
+						<div className="top-line">
+							{__("Watchwords")}
+						</div>
+						<Mutation
+							mutation={UPDATE_INTENT_TRANSLATION_WITH_ARRAY}>
+							{updateIntent => (
+								<MultiSelect
+									onChange={array => this.handleUpdateInputs(updateIntent, {
+										intentName,
+										attribute: C.WATCHWORDS,
+										value: array.map(entry => ucFirst(entry.value))
+									})}
+									options={[]}
+									menuPlacement="auto"
+									value={watchwords.map(ww => ({ label: ww, value: ww }))}
+									allowsCreation={true}
+								/>
+							)}
+						</Mutation>
+					</div>
+				}
+			/>
+
+			{/* Description */}
+			<div className="infos-container">
+				<div className="top-line">
+					{__("Description")}
+				</div>
+				<RoleSwitch
+					components={{
+						[C.ADMIN]: DescriptionComponent,
+						[C.TRANSLATOR]: DescriptionComponent,
+						[C.ALL]: <div className="bottom-line">
+							<div>
+								{description}
+							</div>
+						</div>
+					}}
+				/>
+			</div>
+
+			{/* Examples */}
+			<div className="infos-container">
+				<div className="top-line">
+					{__("Example-POLY", examples && examples.length > 0 ? examples.length : 1)}
+				</div>
+				<ul>
+					{examplesFromState
+						&& examplesFromState.length > 0
+						&& examplesFromState.map((example, i) => (
+							<li key={i}>
+								<RoleSwitch
+									components={{
+										[C.ADMIN]: ExamplesComponent(example, i),
+										[C.TRANSLATOR]: ExamplesComponent(example, i),
+										[C.ALL]: <div className="bottom-line">
+											<div>
+												{example}
+											</div>
+										</div>
+									}}
+								/>
+							</li>
+						))}
+					<li>
+						<RoleSwitch
+							components={{
+								[C.ADMIN]: NewExampleComponent,
+								[C.TRANSLATOR]: NewExampleComponent
+							}}
+						/>
+					</li>
+				</ul>
+			</div>
+		</React.Fragment>;
+	}
+}
+
+IntentInfosEditor.propTypes = {
+	data: PropTypes.object.isRequired,
+	userName: PropTypes.string,
+	client: PropTypes.object,
+	lang: PropTypes.string
+};
+
+export default connect(
+	({ browser }) => ({
+		currentIntent: browser.currentIntent,
+		lang: browser.lang
+	})
+)(withApollo(withUserName(IntentInfosEditor)));
